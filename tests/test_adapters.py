@@ -1,6 +1,7 @@
 import base64
 import json
 import pickle
+import random
 import zlib
 
 import pytest
@@ -103,3 +104,43 @@ def test_selection_checks_missing_and_duplicates():
         list(select_tasks([Task("a", "custom", "prompt")], ids={"missing"}))
     with pytest.raises(HarnessError, match="Duplicate"):
         list(select_tasks([Task("a", "custom", "prompt"), Task("a", "custom", "prompt")]))
+
+
+def test_random_subset_is_reproducible_independent_of_order_and_global_rng():
+    tasks = [Task(str(i), "custom", "prompt") for i in range(50)]
+    state = random.getstate()
+    first = list(select_tasks(iter(tasks), random_limit=10, seed=42))
+    second = list(select_tasks(reversed(tasks), random_limit=10, seed=42))
+    assert random.getstate() == state
+    assert [task.id for task in first] == [task.id for task in second]
+    assert len({task.id for task in first}) == 10
+    assert first != tasks[:10]
+    assert first != list(select_tasks(tasks, random_limit=10, seed=43))
+
+
+def test_random_subset_filters_ids_and_handles_short_or_empty_sources():
+    tasks = [Task(str(i), "custom", "prompt") for i in range(10)]
+    selected = list(select_tasks(tasks, ids={"1", "5", "9"}, random_limit=2))
+    assert len(selected) == 2
+    assert {task.id for task in selected} <= {"1", "5", "9"}
+    assert {task.id for task in select_tasks(tasks, random_limit=100)} == {
+        task.id for task in tasks
+    }
+    assert list(select_tasks([], random_limit=3)) == []
+
+
+def test_random_subset_validates_limits_and_entire_source():
+    tasks = [Task("a", "custom", "prompt"), Task("a", "custom", "duplicate")]
+    with pytest.raises(HarnessError, match="mutually exclusive"):
+        list(select_tasks([], limit=1, random_limit=1))
+    with pytest.raises(HarnessError, match="positive"):
+        list(select_tasks([], random_limit=0))
+    with pytest.raises(HarnessError, match="Duplicate"):
+        list(select_tasks(tasks, random_limit=1))
+    with pytest.raises(HarnessError, match="not found"):
+        list(select_tasks(tasks[:1], ids={"missing"}, random_limit=1))
+
+
+def test_default_limit_still_selects_source_prefix():
+    tasks = [Task(str(i), "custom", "prompt") for i in range(10)]
+    assert list(select_tasks(tasks, limit=3)) == tasks[:3]

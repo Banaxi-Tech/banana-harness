@@ -12,6 +12,7 @@ from banana_harness.adapters import BENCHMARKS, load_tasks, select_tasks
 from banana_harness.agent import FINISH, AgentConfig, LiteLLMModel, ScriptedModel
 from banana_harness.download import SOURCES, fetch
 from banana_harness.runner import RunConfig, Runner
+from banana_harness.transformers_model import TransformersModel
 from banana_harness.types import HarnessError, Task
 from banana_harness.util import digest, write_json
 
@@ -32,14 +33,24 @@ def parser() -> argparse.ArgumentParser:
     listing = sub.add_parser("list", help="Inspect local task metadata, without downloading")
     listing.add_argument("benchmark", choices=(*BENCHMARKS, "custom"))
     listing.add_argument("--source", required=True)
-    listing.add_argument("--limit", type=int, default=20)
+    list_limit = listing.add_mutually_exclusive_group()
+    list_limit.add_argument("--limit", type=int, help="First N tasks (default: 20)")
+    list_limit.add_argument(
+        "--random-limit", type=int, help="Sample up to N tasks without replacement"
+    )
+    listing.add_argument("--seed", type=int, default=0, help="Seed for --random-limit (default: 0)")
     run = sub.add_parser("run", help="Run tasks; remote provisioning is opt-in")
     run.add_argument("benchmark", choices=(*BENCHMARKS, "custom"))
     run.add_argument("--source", help="Local Harbor task directory or JSONL")
     model = run.add_mutually_exclusive_group(required=True)
-    model.add_argument("--model", help="LiteLLM provider/model name")
+    model.add_argument("--model", help="Provider/model name or Transformers model ID/local path")
     model.add_argument("--replay", type=Path, help="JSON array of model responses (offline)")
-    run.add_argument("--model-options", type=Path, help="JSON object of provider options")
+    run.add_argument("--model-runtime", choices=("litellm", "transformers"), default="litellm")
+    run.add_argument("--model-options", type=Path, help="JSON object of model runtime options")
+    run.add_argument(
+        "--trust-remote-code", action="store_true",
+        help="Allow custom tokenizer/model Python code with the Transformers runtime",
+    )
     run.add_argument("--backend", choices=("auto", "native", "rootfs"), default="auto")
     run.add_argument("--output", type=Path, default=Path("jobs/default"))
     run.add_argument("--cache", type=Path, default=Path(".banana/udocker"))
@@ -48,7 +59,12 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--split", default="test")
     run.add_argument("--dataset-config")
     run.add_argument("--id", action="append", dest="ids")
-    run.add_argument("--limit", type=int)
+    run_limit = run.add_mutually_exclusive_group()
+    run_limit.add_argument("--limit", type=int, help="First N tasks in source order")
+    run_limit.add_argument(
+        "--random-limit", type=int, help="Sample up to N tasks without replacement"
+    )
+    run.add_argument("--seed", type=int, default=0, help="Seed for --random-limit (default: 0)")
     run.add_argument("--max-steps", type=int, default=100)
     run.add_argument("--command-timeout", type=float, default=120)
     run.add_argument("--max-cost", type=float)
@@ -70,7 +86,7 @@ def diagnostics() -> dict:
         "commands": {name: shutil.which(name) for name in ("bash", "git", "udocker")},
         "optional_modules": {
             name: importlib.util.find_spec(name) is not None
-            for name in ("litellm", "datasets", "swebench")
+            for name in ("litellm", "transformers", "torch", "accelerate", "datasets", "swebench")
         },
         "nested_container": Path("/.dockerenv").exists(),
         "notebook": "ipykernel" in sys.modules or bool(os.environ.get("COLAB_RELEASE_TAG")),
@@ -125,7 +141,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "list":
-            tasks = select_tasks(load_tasks(args.benchmark, args.source), limit=args.limit)
+            limit = args.limit
+            if limit is None and args.random_limit is None:
+                limit = 20
+            tasks = select_tasks(
+                load_tasks(args.benchmark, args.source), limit=limit,
+                random_limit=args.random_limit, seed=args.seed,
+            )
             for task in tasks:
                 print(
                     json.dumps(
@@ -144,6 +166,10 @@ def main(argv: list[str] | None = None) -> int:
             options = json.loads(args.model_options.read_text()) if args.model_options else {}
             if not isinstance(options, dict):
                 raise HarnessError("--model-options must contain a JSON object")
+            if args.replay and args.model_runtime != "litellm":
+                raise HarnessError("--model-runtime applies to --model, not --replay")
+            if args.trust_remote_code and (args.replay or args.model_runtime != "transformers"):
+                raise HarnessError("--trust-remote-code requires --model-runtime transformers")
             if args.replay:
                 replies = json.loads(args.replay.read_text())
                 if not isinstance(replies, list) or not all(isinstance(x, str) for x in replies):
@@ -153,6 +179,24 @@ def main(argv: list[str] | None = None) -> int:
                     return ScriptedModel(replies)
 
                 identity = digest(replies)
+            elif args.model_runtime == "transformers":
+                if "allow_downloads" in options:
+                    raise HarnessError("Use --allow-downloads instead of a model-options entry")
+                if args.trust_remote_code:
+                    options["trust_remote_code"] = True
+                try:
+                    local_model = TransformersModel(
+                        args.model, allow_downloads=args.allow_downloads, **options
+                    )
+                except TypeError as error:
+                    raise HarnessError(f"Invalid Transformers model options: {error}") from error
+
+                def factory():
+                    return local_model
+
+                identity = digest(
+                    {"runtime": "transformers", "model": args.model, "options": options}
+                )
             else:
 
                 def factory():
@@ -170,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 ids=set(args.ids) if args.ids else None,
                 limit=args.limit,
+                random_limit=args.random_limit,
+                seed=args.seed,
             )
             config = RunConfig(
                 output=args.output,

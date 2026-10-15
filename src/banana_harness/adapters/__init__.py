@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -94,7 +95,21 @@ def select_tasks(
     tasks: Iterable[Task],
     ids: set[str] | None = None,
     limit: int | None = None,
+    *,
+    random_limit: int | None = None,
+    seed: int = 0,
 ) -> Iterator[Task]:
+    """Select a prefix, or sample up to random_limit tasks reproducibly by task ID."""
+    if random_limit is not None:
+        if limit is not None:
+            raise HarnessError("limit and random_limit are mutually exclusive")
+        if random_limit < 1:
+            raise HarnessError("random_limit must be positive")
+        # Validate the full source and apply ID filtering before sampling. Sorting makes
+        # the subset independent of source ordering; use a private RNG for model runs.
+        candidates = sorted(select_tasks(tasks, ids=ids), key=lambda task: task.id)
+        yield from random.Random(seed).sample(candidates, min(random_limit, len(candidates)))
+        return
     if limit is not None and limit < 1:
         raise HarnessError("limit must be positive")
     count = 0

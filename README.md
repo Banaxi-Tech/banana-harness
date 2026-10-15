@@ -34,6 +34,7 @@ The core package has no runtime dependencies on Python 3.11+. Optional extras:
 | Extra | Purpose |
 | --- | --- |
 | `models` | LiteLLM API providers and compatible local model servers |
+| `transformers` | Direct local Hugging Face Transformers inference with PyTorch and Accelerate |
 | `datasets` | Streaming Hugging Face dataset loading |
 | `rootfs` | udocker 1.3.17 for daemon-free image execution |
 | `swebench` | Pinned SWE-bench 4.1.0 evaluation scripts and parsers |
@@ -41,11 +42,75 @@ The core package has no runtime dependencies on Python 3.11+. Optional extras:
 | `all` | All of the above |
 | `dev` | Tests, lint, build, and package validation |
 
-Imports, `doctor`, `list`, and `smoke` do not fetch benchmark data or images. Remote dataset
-loading, repository cloning, and image pulls require `--allow-downloads` or
+Imports, `doctor`, `list`, and `smoke` do not fetch benchmark data, images, or model weights.
+Remote dataset loading, repository cloning, image pulls, and Transformers model downloads
+require `--allow-downloads` or
 `RunConfig(allow_downloads=True)`. Local task sources and cached images work without that
 flag. This switch controls harness provisioning; it does not firewall agent commands,
 user-supplied setup scripts, verifier scripts, or model API requests.
+
+## Local Transformers models
+
+Run a causal chat model directly in the harness process, without LiteLLM, an API key, or
+an inference server. Install only the extras you need:
+
+```bash
+pip install -e '.[transformers]'
+banana run custom --source /path/to/tasks.jsonl \
+  --model-runtime transformers --model /path/to/local-chat-model \
+  --model-options /path/to/model-options.json --output jobs/local
+```
+
+For example, `model-options.json` can contain:
+
+```json
+{
+  "device_map": "auto",
+  "dtype": "auto",
+  "max_new_tokens": 1024,
+  "generation_kwargs": {"do_sample": false},
+  "chat_template_kwargs": {"enable_thinking": false}
+}
+```
+
+The default device is CPU; set `device` to `cuda` or `cuda:0` for one GPU, or use
+`device_map: "auto"` for Accelerate placement. With a device map, the `device` option is
+ignored. `chat_template_kwargs` passes model-specific options to the tokenizer; omit it
+when unnecessary. The runtime uses the tokenizer's
+[chat template](https://huggingface.co/docs/transformers/chat_templating) and decodes only
+the generated continuation. Models must support the agent's system/user/assistant chat
+history. Context overflow raises an error instead of silently truncating history.
+
+`--model` also accepts a Hugging Face model ID. Only local/cached files are loaded by
+default; add `--allow-downloads` to fetch weights/tokenizer files. Set `revision` in the
+options file to pin the model independently of the dataset's `--revision`. For models
+with custom Python implementations, add `--trust-remote-code` or set
+`"trust_remote_code": true` in the options file. This executes the model repository's
+Python code. The default is false and the option applies to both model and tokenizer.
+
+Python/notebook usage keeps one model instance across tasks:
+
+```python
+from pathlib import Path
+from banana_harness import RunConfig, Runner, TransformersModel, load_tasks
+
+model = TransformersModel(
+    "/path/to/local-chat-model",
+    device_map="auto",
+    max_new_tokens=1024,
+    trust_remote_code=False,
+)
+runner = Runner(lambda: model, RunConfig(output=Path("jobs/local")))
+summary = runner.run(load_tasks("custom", "/path/to/tasks.jsonl"))
+```
+
+Weights load on the first query and are reused across tasks. Generation defaults to greedy
+decoding; sampling options go in `generation_kwargs`. Each trajectory records prompt and
+completion token counts. Local inference records zero API cost; hardware costs are not
+estimated. Task time limits are checked between generations/commands, so an in-flight
+generation may exceed the deadline. CPU inference is supported; practical model size and
+speed depend on available RAM/VRAM. Only the tiny synthetic local checkpoint is tested
+offline; full coding checkpoints and GPU placement still require integration validation.
 
 ## Execution paths
 
@@ -95,6 +160,32 @@ The Pro adapter targets public V2 tasks. V1 JSON rows alone lack complete verifi
 they are rejected instead of guessing tests. An explicitly normalized custom Task with
 setup/test commands can represent other versions. DeepSWE refers to the
 [Datacurve benchmark](https://github.com/datacurve-ai/deep-swe).
+
+### Reuse a random subset across models
+
+`--limit 100` selects the first 100 tasks in source order. Use `--random-limit 100 --seed 42`
+to sample up to 100 distinct tasks reproducibly instead:
+
+```bash
+banana run swebench-verified --source /path/to/verified.jsonl \
+  --model-runtime transformers --model /path/to/model-a --backend rootfs \
+  --random-limit 100 --seed 42 --output jobs/model-a
+```
+
+Repeat with the same source, random limit, and seed for each model, changing `--model` and
+`--output`. Selection is independent of the model and source ordering: eligible tasks are
+sorted by ID before sampling. Keep the task population unchanged (or pin `--revision` for
+a remote dataset). The default seed is `0`. `--limit` and `--random-limit` are mutually
+exclusive; repeated `--id` filters apply before random sampling. Sampling reads the full
+task source before execution. If fewer than N tasks are available, all are selected.
+
+Preview the same subset without loading a model or running tasks:
+
+```bash
+banana list swebench-verified --source /path/to/verified.jsonl --random-limit 100 --seed 42
+```
+
+Python also supports `select_tasks(tasks, random_limit=100, seed=42)`.
 
 ### SWE-bench Verified
 
