@@ -86,7 +86,10 @@ def diagnostics() -> dict:
         "commands": {name: shutil.which(name) for name in ("bash", "git", "udocker")},
         "optional_modules": {
             name: importlib.util.find_spec(name) is not None
-            for name in ("litellm", "transformers", "torch", "accelerate", "datasets", "swebench")
+            for name in (
+                "litellm", "transformers", "torch", "accelerate",
+                "datasets", "swebench", "klein_code_bench",
+            )
         },
         "nested_container": Path("/.dockerenv").exists(),
         "notebook": "ipykernel" in sys.modules or bool(os.environ.get("COLAB_RELEASE_TAG")),

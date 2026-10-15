@@ -7,11 +7,13 @@ from pathlib import Path
 from urllib.parse import quote
 
 from banana_harness.adapters.harbor import load_harbor
+from banana_harness.adapters.klein import SUBSETS, klein_task
 from banana_harness.adapters.livecode import livecode_task
 from banana_harness.adapters.swebench import swebench_task
 from banana_harness.types import HarnessError, Task
 
 BENCHMARKS = (
+    "klein-code-bench",
     "swebench-verified",
     "swebench-pro",
     "livecodebench-v6",
@@ -55,7 +57,7 @@ def load_tasks(
         raise HarnessError(
             "Supply --source for local tasks, or explicitly enable --allow-downloads."
         )
-    if benchmark not in {"swebench-verified", "livecodebench-v6"}:
+    if benchmark not in {"swebench-verified", "livecodebench-v6", "klein-code-bench"}:
         raise HarnessError(f"Use banana fetch {benchmark} --dest PATH, then --source PATH.")
     try:
         from datasets import load_dataset
@@ -86,6 +88,14 @@ def load_tasks(
             streaming=True,
         )
     else:
+        if benchmark == "klein-code-bench":
+            dataset_id, config = "klein-ml/klein-code-bench", dataset_config or "default"
+            if config not in (*SUBSETS, "default"):
+                raise HarnessError(
+                    "Klein-Code-Bench config must be default, easy, intermediate, hard or max"
+                )
+            if split != "test":
+                raise HarnessError("Klein-Code-Bench provides only the 'test' split")
         dataset = load_dataset(
             dataset_id, name=config, split=split, revision=revision, streaming=True
         )
@@ -96,6 +106,8 @@ def load_tasks(
 
 
 def row_to_task(benchmark: str, row: dict) -> Task:
+    if benchmark == "klein-code-bench":
+        return klein_task(row)
     if benchmark == "swebench-verified":
         return swebench_task(row)
     if benchmark == "livecodebench-v6":

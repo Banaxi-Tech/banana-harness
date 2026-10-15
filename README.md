@@ -9,8 +9,9 @@ message history, independent shells, and a final submission command. It is an in
 implementation, rather than the upstream mini SWE Agent package.
 
 **Status: experimental 0.1.0.** The package is tested with synthetic offline tasks. Real
-benchmark images, complete suites, API model calls, and Colab/Molab execution have not
-been validated in this repository. Packaging is prepared for PyPI; it has not been published.
+benchmark images, model-generated complete suites, API model calls, and Colab/Molab execution
+have not been validated in this repository. Klein-Code-Bench has additionally been checked
+with trusted reference projects; this is evaluator validation, not a model score. Packaging is prepared for PyPI; it has not been published.
 
 ## Install and try it
 
@@ -39,6 +40,7 @@ The core package has no runtime dependencies on Python 3.11+. Optional extras:
 | `rootfs` | udocker 1.3.17 for daemon-free image execution |
 | `swebench` | Pinned SWE-bench 4.1.0 evaluation scripts and parsers |
 | `livecode` | NumPy, needed by a separately supplied upstream LiveCodeBench evaluator |
+| `klein` | Pinned Klein-Code-Bench evaluator (Python 3.11+), native project generation |
 | `all` | All of the above |
 | `dev` | Tests, lint, build, and package validation |
 
@@ -351,3 +353,46 @@ Sources: [mini SWE Agent](https://github.com/SWE-agent/mini-swe-agent),
 [DeepSWE](https://github.com/datacurve-ai/deep-swe),
 [Terminal-Bench 2.1](https://github.com/harbor-framework/terminal-bench-2-1), and
 [udocker](https://indigo-dc.github.io/udocker/user_manual.html).
+
+
+## Klein-Code-Bench: build projects from scratch
+
+[Klein-Code-Bench](https://huggingface.co/datasets/klein-ml/klein-code-bench) provides
+260 Python project tasks: 65 each in easy (2–8B target), intermediate (8–16B), hard
+(16–32B), and max (60–200B). These model-size targets are not empirically calibrated.
+There are 65 shared domain families with cumulative CLI, workspace, transaction,
+and durability requirements. Each task starts with an empty native workspace and
+passes only when its entire acceptance suite passes. No container backend is used.
+
+Use Python 3.11+ and install the optional evaluator:
+
+```bash
+pip install -e '.[klein,models,datasets]'
+# Local sources need no dataset download:
+banana list klein-code-bench --source /path/to/klein-code-bench/klein_code_bench/data/easy.jsonl
+
+# Download one subset and use an API-compatible local model endpoint.
+# local-model.json: {"api_base":"http://127.0.0.1:8000/v1","api_key":"local","temperature":0}
+banana run klein-code-bench --dataset-config easy --allow-downloads \
+  --backend native --model openai/your-local-model --model-options local-model.json \
+  --output jobs/klein-easy
+```
+
+Select `intermediate`, `hard`, `max` or `default` (all 260) through `--dataset-config`.
+Pin the dataset commit with `--revision`. Both API and Transformers models use the
+same adapter and evaluator; existing model options and generation budgets apply.
+A local evaluator checkout can instead be installed with `pip install -e /path/to/klein-code-bench`.
+
+Private-to-agent acceptance scenarios remain in `Task.grading`; they are excluded from
+`Task.public()`, the workspace and the prompt. The dataset itself is public, so this
+does not enforce secrecy against a host agent that deliberately fetches the tests.
+The complete generated project is exported as a patch and replayed in a fresh verifier
+workspace. The evaluator copies it into independent temporary scenario directories,
+checks JSONL interactions and force-kill recovery, and writes `klein_acceptance.json`.
+Use this native execution only in an environment where model code is allowed to run.
+
+`summary.json` includes `klein_code_bench` with fixed denominators of 65 per subset
+and 260 overall. Missing tasks remain in those denominators; the existing top-level
+`pass_rate` describes only the tasks in the current job. Benchmark reports are
+`resolve@1` when each task has one generation attempt and no test-guided revision.
+A partially completed task receives zero reward, regardless of individual assertion successes.

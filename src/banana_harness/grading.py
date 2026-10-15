@@ -307,3 +307,37 @@ def _grade_livecode_official(
             "metadata": data.get("metadata"),
         },
     )
+
+
+def grade_klein(task: Task, environment: NativeEnvironment, directory: Path) -> Grade:
+    """Evaluate the complete project; held-out scenarios stay in this parent process."""
+    if sys.version_info < (3, 11):
+        raise HarnessError("Klein-Code-Bench requires Python 3.11 or later")
+    try:
+        from klein_code_bench.runner import evaluate
+    except ImportError as error:
+        raise HarnessError(
+            "Install banana-harness[klein] or a local klein-code-bench checkout "
+            "to grade Klein tasks."
+        ) from error
+    row = {
+        "task_id": task.id,
+        "subset": task.metadata["subset"],
+        "timeout_seconds": task.grading["timeout_seconds"],
+    }
+    report = evaluate(row, environment.workspace, tests=task.grading["acceptance_tests"])
+    write_json(directory / "klein_acceptance.json", report)
+    return Grade(
+        "passed" if report["resolved"] else "failed",
+        float(report["resolved"]),
+        {
+            "subset": task.metadata["subset"],
+            "family": task.metadata.get("family"),
+            "metric": "resolve@1",
+            "evaluator": "klein-code-bench==0.1.0",
+            "report": str(directory / "klein_acceptance.json"),
+            "assertions_passed": report.get("assertions_passed", 0),
+            "assertions_total": report.get("assertions_total", 0),
+            "reason": report.get("reason"),
+        },
+    )

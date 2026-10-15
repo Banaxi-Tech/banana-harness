@@ -23,6 +23,7 @@ from banana_harness.grading import (
     export_patch,
     grade_command,
     grade_harbor,
+    grade_klein,
     grade_livecode,
     grade_swebench,
 )
@@ -67,6 +68,10 @@ class Runner:
         backend = self.config.backend
         if backend == "auto":
             backend = "rootfs" if task.image else "native"
+        if task.kind == "klein" and backend != "native":
+            raise HarnessError(
+                "Klein-Code-Bench requires the native Python evaluator (no containers)."
+            )
         if task.kind == "livecode" and backend != "native":
             raise HarnessError("LiveCodeBench currently uses the native Python evaluator.")
         if task.kind == "swebench" and backend != "rootfs":
@@ -144,6 +149,22 @@ class Runner:
             "official_score": False,
             "results": results,
         }
+        klein_results = [r for r in results if r.get("benchmark") == "klein-code-bench"]
+        if klein_results:
+            tiers = {}
+            for tier in ("easy", "intermediate", "hard", "max"):
+                selected = [r for r in klein_results if r.get("subset") == tier]
+                resolved = sum(r["status"] == "passed" for r in selected)
+                tiers[tier] = {
+                    "submitted": len(selected), "total": 65, "resolved": resolved,
+                    "resolution_rate": resolved / 65,
+                }
+            total_resolved = sum(t["resolved"] for t in tiers.values())
+            summary["klein_code_bench"] = {
+                "metric": "resolve@1", "total": 260, "submitted": len(klein_results),
+                "resolved": total_resolved, "resolution_rate": total_resolved / 260,
+                "complete": len(klein_results) == 260, "subsets": tiers,
+            }
         write_json(self.config.output / "summary.json", summary)
         with (self.config.output / "predictions.jsonl").open("w") as file:
             for result in results:
@@ -232,6 +253,8 @@ class Runner:
                 "No security sandbox",
             ],
         }
+        if task.kind == "klein":
+            result["subset"] = task.metadata["subset"]
         write_json(result_file, result)
         agent_environment = verifier_environment = None
         agent = None
@@ -279,6 +302,11 @@ class Runner:
                 grade = grade_livecode(
                     task, agent_environment, attempt, evaluator=self.config.livecode_evaluator
                 )
+            elif task.kind == "klein":
+                verifier_environment = self._environment(task, backend, attempt / "verify")
+                if patch:
+                    apply_patch(verifier_environment, attempt / "model.patch")
+                grade = grade_klein(task, verifier_environment, attempt)
             elif task.kind == "swebench":
                 verifier_environment = self._environment(task, backend, attempt / "verify")
                 if patch:
