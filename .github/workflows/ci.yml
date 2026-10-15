@@ -1,0 +1,30 @@
+name: Package and offline tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m pytest -q
+      - run: ruff check src tests
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - run: python -m venv /tmp/banana-wheel
+      - run: /tmp/banana-wheel/bin/pip install dist/*.whl
+      - run: /tmp/banana-wheel/bin/banana doctor --json
+      - run: /tmp/banana-wheel/bin/banana smoke --output /tmp/banana-wheel-smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.python }}
+          path: dist/
