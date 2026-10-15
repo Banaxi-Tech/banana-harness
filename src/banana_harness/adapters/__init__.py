@@ -4,6 +4,7 @@ import json
 import random
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from urllib.parse import quote
 
 from banana_harness.adapters.harbor import load_harbor
 from banana_harness.adapters.livecode import livecode_task
@@ -66,8 +67,28 @@ def load_tasks(
     config = dataset_config
     if benchmark == "livecodebench-v6":
         dataset_id, config = "livecodebench/code_generation_lite", "release_v6"
-    # Parquet configs avoid deprecated trust_remote_code dataset scripts.
-    dataset = load_dataset(dataset_id, name=config, split=split, revision=revision, streaming=True)
+        if dataset_config not in {None, config}:
+            raise HarnessError("livecodebench-v6 supports only dataset_config='release_v6'")
+        if split != "test":
+            raise HarnessError("LiveCodeBench release_v6 provides only the 'test' split")
+        # Calling load_dataset with the repo ID discovers its legacy Python script,
+        # even with name='release_v6'. Match that release's upstream file mapping
+        # explicitly and use the built-in JSON reader instead (datasets 4+).
+        base_url = (
+            f"https://huggingface.co/datasets/{dataset_id}/resolve/"
+            f"{quote(revision or 'main', safe='')}"
+        )
+        filenames = ["test.jsonl", *(f"test{i}.jsonl" for i in range(2, 7))]
+        dataset = load_dataset(
+            "json",
+            data_files={"test": [f"{base_url}/{name}" for name in filenames]},
+            split=split,
+            streaming=True,
+        )
+    else:
+        dataset = load_dataset(
+            dataset_id, name=config, split=split, revision=revision, streaming=True
+        )
     for row in dataset:
         task = row_to_task(benchmark, row)
         task.metadata.update(dataset=dataset_id, dataset_config=config, dataset_revision=revision)

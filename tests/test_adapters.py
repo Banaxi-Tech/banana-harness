@@ -2,7 +2,10 @@ import base64
 import json
 import pickle
 import random
+import sys
 import zlib
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -16,6 +19,78 @@ from banana_harness.types import HarnessError, Task
 def test_dataset_access_opt_in():
     with pytest.raises(HarnessError, match="allow-downloads"):
         list(load_tasks("swebench-verified"))
+
+
+@pytest.mark.parametrize("revision", [None, "abc123", "refs/pr/7"])
+def test_livecode_remote_loads_all_v6_files_without_dataset_script(monkeypatch, revision):
+    load_dataset = Mock(
+        return_value=[
+            {
+                "question_id": "one",
+                "question_content": "Solve",
+                "metadata": "{}",
+                "private_test_cases": "private-encoded",
+            }
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "datasets", SimpleNamespace(load_dataset=load_dataset))
+    tasks = list(load_tasks("livecodebench-v6", allow_downloads=True, revision=revision))
+    expected_revision = {None: "main", "abc123": "abc123", "refs/pr/7": "refs%2Fpr%2F7"}[revision]
+    base = (
+        "https://huggingface.co/datasets/livecodebench/code_generation_lite/resolve/"
+        + expected_revision
+    )
+    load_dataset.assert_called_once_with(
+        "json",
+        data_files={
+            "test": [
+                f"{base}/test.jsonl",
+                f"{base}/test2.jsonl",
+                f"{base}/test3.jsonl",
+                f"{base}/test4.jsonl",
+                f"{base}/test5.jsonl",
+                f"{base}/test6.jsonl",
+            ]
+        },
+        split="test",
+        streaming=True,
+    )
+    assert tasks[0].metadata["dataset_revision"] == revision
+    assert tasks[0].metadata["dataset_config"] == "release_v6"
+    assert tasks[0].grading["private_encoded"] == "private-encoded"
+    assert "private-encoded" not in tasks[0].prompt
+
+
+@pytest.mark.parametrize("options", [{"split": "train"}, {"dataset_config": "release_v5"}])
+def test_livecode_remote_rejects_other_releases_or_splits(monkeypatch, options):
+    load_dataset = Mock()
+    monkeypatch.setitem(sys.modules, "datasets", SimpleNamespace(load_dataset=load_dataset))
+    with pytest.raises(HarnessError, match="only"):
+        list(load_tasks("livecodebench-v6", allow_downloads=True, **options))
+    load_dataset.assert_not_called()
+
+
+def test_verified_remote_loading_preserves_revision_and_config(monkeypatch):
+    load_dataset = Mock(return_value=[])
+    monkeypatch.setitem(sys.modules, "datasets", SimpleNamespace(load_dataset=load_dataset))
+    assert (
+        list(
+            load_tasks(
+                "swebench-verified",
+                allow_downloads=True,
+                revision="pinned",
+                dataset_config="default",
+            )
+        )
+        == []
+    )
+    load_dataset.assert_called_once_with(
+        "princeton-nlp/SWE-bench_Verified",
+        name="default",
+        split="test",
+        revision="pinned",
+        streaming=True,
+    )
 
 
 def test_fetch_opt_in(tmp_path):

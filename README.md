@@ -239,8 +239,12 @@ banana run livecodebench-v6 --source /path/to/lcb-v6.jsonl \
   --model provider/model --backend native --limit 1 --output jobs/lcb
 ```
 
-Without `--source`, `--allow-downloads` streams the named `release_v6` Parquet config, without
-executing Hugging Face dataset scripts. The agent writes `solution.py`. Private cases are
+Without `--source`, `--allow-downloads` streams the six upstream JSONL files that define
+`release_v6` (`test.jsonl` through `test6.jsonl`) using the built-in JSON reader. This avoids
+the repository's legacy dataset script, which Datasets 4+ no longer supports. `--revision`
+applies to all six file URLs. Only the `test` split and `release_v6` config are supported.
+Random sampling reads all six files before selecting a subset, including encoded private
+tests; allow sufficient download time and memory. The agent writes `solution.py`. Private cases are
 decoded in the driver after generation and are never put in the prompt or workspace.
 The restricted pickle decoder accepts plain data and rejects executable pickle globals.
 
